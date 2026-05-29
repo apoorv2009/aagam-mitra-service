@@ -7,8 +7,12 @@ class Settings(BaseSettings):
     app_name: str = "aagam-mitra-service"
     environment: str = "dev"
 
-    # Google Gemini — used for both embeddings and answer generation
+    # Google Gemini — embeddings only
     gemini_api_key: str = ""
+
+    # Groq — answer generation (free, 14,400 req/day)
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.1-8b-instant"
 
     # Pinecone — persistent vector store
     pinecone_api_key: str = ""

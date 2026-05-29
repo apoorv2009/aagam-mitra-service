@@ -4,10 +4,7 @@ from app.core.config import get_settings
 from app.services.embedder import embed_texts
 from app.services.vector_store import get_index
 
-_GEMINI_GENERATE_URL = (
-    "https://generativelanguage.googleapis.com"
-    "/v1beta/models/gemini-2.0-flash:generateContent"
-)
+_GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 _SYSTEM_PROMPT = (
     "You are Aagam Mitra, a knowledgeable guide for Jain Agam texts and temple matters. "
@@ -20,7 +17,7 @@ _SYSTEM_PROMPT = (
 async def ask(question: str) -> dict:
     settings = get_settings()
 
-    # Embed the question with the QUERY task type
+    # Embed the question with QUERY task type
     query_embedding = (await embed_texts([question], task_type="RETRIEVAL_QUERY"))[0]
 
     # Retrieve top-k matching chunks from Pinecone
@@ -38,22 +35,29 @@ async def ask(question: str) -> dict:
             "sources": [],
         }
 
-    # Build context block from retrieved chunks
+    # Build context from retrieved chunks
     context = "\n\n---\n\n".join(
         f"[{m.metadata.get('source', '?')}, p.{m.metadata.get('page', '?')}]\n{m.metadata.get('text', '')}"
         for m in matches
     )
-    prompt = f"{_SYSTEM_PROMPT}\n\nContext:\n{context}\n\nQuestion: {question}\n\nAnswer:"
 
-    # Generate answer with Gemini
+    # Generate answer with Groq
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f"{_GEMINI_GENERATE_URL}?key={settings.gemini_api_key}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
+            _GROQ_CHAT_URL,
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            json={
+                "model": settings.groq_model,
+                "messages": [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+                ],
+                "temperature": 0.1,
+            },
         )
         response.raise_for_status()
 
-    answer: str = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+    answer: str = response.json()["choices"][0]["message"]["content"]
     sources = [
         {"file": m.metadata.get("source"), "page": m.metadata.get("page")}
         for m in matches
