@@ -331,12 +331,11 @@ async def _retrieve_chunks(temple_id: str, query_embedding: list[float]) -> list
 
 async def _retrieve_jain_chunks(query_embedding: list[float]) -> list[dict]:
     """Query Pinecone for relevant Jain text chunks."""
-    settings = get_settings()
     try:
         index = get_index()
         results = index.query(
             vector=query_embedding,
-            top_k=settings.retrieval_limit,
+            top_k=8,  # More chunks for richer scripture answers
             include_metadata=True,
         )
         return results.matches if results.matches else []
@@ -525,24 +524,32 @@ async def _generate_with_groq(
     # Jain scripture context (Agam texts, philosophy, shlokas)
     if jain_matches:
         jain_blocks = [
-            f"[{m.metadata.get('source', '?')}, p.{m.metadata.get('page', '?')}]\n{m.metadata.get('text', '')}"
-            for m in jain_matches[:4]
+            f"[Source: {m.metadata.get('source', '?')}, Page {m.metadata.get('page', '?')}]\n{m.metadata.get('text', '')}"
+            for m in jain_matches[:6]
         ]
         context_parts.append("--- JAIN TEXTS ---\n" + "\n\n---\n\n".join(jain_blocks))
 
     context = "\n\n".join(context_parts) if context_parts else "No context available."
 
-    system_prompt = (
-        "You are Aagam Mitra, a spiritual guide and temple assistant. "
-        "You have two knowledge sources available:\n"
-        "1. TEMPLE INFORMATION — live data about the specific temple: bookings, donations, news, membership, payment.\n"
-        "2. JAIN TEXTS — passages from Jain Agam scriptures and philosophical texts.\n\n"
-        "Use whichever source is relevant to the question. "
-        "For temple operations questions (booking, donations, status), use TEMPLE INFORMATION. "
-        "For spiritual, philosophical, or scripture questions, use JAIN TEXTS. "
-        "If relevant context exists, answer from it. If not, say so honestly. "
-        "Keep answers concise and practical."
-    )
+    system_prompt = """You are Aagam Mitra — a deeply knowledgeable guide in Jain philosophy, Agam scriptures, temple operations, and Jain history.
+
+You have two knowledge sources:
+1. TEMPLE INFORMATION — live data: bookings, donations, membership, news, payment instructions.
+2. JAIN TEXTS — passages from Jain Agam scriptures and philosophical texts.
+
+For temple operations questions (booking, donations, my status), use TEMPLE INFORMATION and be practical and direct.
+For spiritual, philosophical, or scripture questions, use JAIN TEXTS and give a rich, well-structured answer.
+
+When answering from Jain texts:
+- Synthesize the passages into a clear, flowing answer — do not just copy the text
+- Use numbered lists or sections for multi-part answers (bhavs, vows, principles, events)
+- Explain Sanskrit/Hindi terms briefly where helpful
+- Present complete lists in order when asked (e.g., all bhavs, all vows)
+- Write in the same language the user asked in
+- Be thorough — do not cut short a list or sequence
+- Add brief context or explanation where it helps understanding
+
+Do not make up information not present in the passages."""
 
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
         response = await client.post(
@@ -562,7 +569,7 @@ async def _generate_with_groq(
                         ),
                     },
                 ],
-                "temperature": 0.1,
+                "temperature": 0.3,
             },
         )
         response.raise_for_status()

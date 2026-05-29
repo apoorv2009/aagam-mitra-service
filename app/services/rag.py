@@ -6,25 +6,30 @@ from app.services.vector_store import get_index
 
 _GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-_SYSTEM_PROMPT = (
-    "You are Aagam Mitra, a knowledgeable guide for Jain Agam texts and temple matters. "
-    "Answer using only the context passages provided below. "
-    "If the answer cannot be found in the context, say so honestly rather than guessing. "
-    "Keep your answer concise and cite the source text when relevant."
-)
+_SYSTEM_PROMPT = """You are Aagam Mitra — a deeply knowledgeable guide in Jain philosophy, Agam scriptures, and Jain history.
+
+Your role is to give clear, well-structured, and insightful answers. You have access to reference passages from Jain texts. Use them as your source material, but present the information naturally — like a scholar explaining to a student, not like a machine copying text.
+
+Guidelines:
+- Synthesize information from the passages into a coherent, flowing answer
+- Use numbered lists or sections when the answer has multiple parts (like listing bhavs, vows, or principles)
+- Present names, terms, and concepts clearly — transliterate Sanskrit/Hindi terms and briefly explain them
+- If the passages contain a list or sequence (like bhavs/lives), present it completely and in order
+- Add brief context or explanation where it helps understanding
+- Write in the same language the user asked in (Hindi question → Hindi answer, English → English)
+- Be thorough for questions asking for complete lists or all items
+- Do not make up information not present in the passages"""
 
 
 async def ask(question: str) -> dict:
     settings = get_settings()
 
-    # Embed the question with QUERY task type
     query_embedding = (await embed_texts([question], task_type="RETRIEVAL_QUERY"))[0]
 
-    # Retrieve top-k matching chunks from Pinecone
     index = get_index()
     results = index.query(
         vector=query_embedding,
-        top_k=settings.retrieval_limit,
+        top_k=8,  # More chunks = more complete answers for multi-page topics
         include_metadata=True,
     )
     matches = results.matches if results.matches else []
@@ -35,13 +40,11 @@ async def ask(question: str) -> dict:
             "sources": [],
         }
 
-    # Build context from retrieved chunks
     context = "\n\n---\n\n".join(
-        f"[{m.metadata.get('source', '?')}, p.{m.metadata.get('page', '?')}]\n{m.metadata.get('text', '')}"
+        f"[Source: {m.metadata.get('source', '?')}, Page {m.metadata.get('page', '?')}]\n{m.metadata.get('text', '')}"
         for m in matches
     )
 
-    # Generate answer with Groq
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             _GROQ_CHAT_URL,
@@ -50,9 +53,12 @@ async def ask(question: str) -> dict:
                 "model": settings.groq_model,
                 "messages": [
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+                    {
+                        "role": "user",
+                        "content": f"Reference passages from Jain texts:\n\n{context}\n\nQuestion: {question}",
+                    },
                 ],
-                "temperature": 0.1,
+                "temperature": 0.3,
             },
         )
         response.raise_for_status()

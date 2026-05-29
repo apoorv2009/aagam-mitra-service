@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # Groq — answer generation (free, 14,400 req/day)
     groq_api_key: str = ""
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # Pinecone — persistent vector store for Jain texts
     pinecone_api_key: str = ""
