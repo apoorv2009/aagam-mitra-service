@@ -3,11 +3,17 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class ChatHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class TempleAssistantRequest(BaseModel):
     user_id: str = Field(..., min_length=3, max_length=32)
     role: Literal["devotee", "admin"]
     message: str = Field(..., min_length=2, max_length=2000)
     temple_name: str | None = Field(default=None, max_length=160)
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
 
 
 class TempleAssistantCitation(BaseModel):

@@ -551,24 +551,30 @@ When answering from Jain texts:
 
 Do not make up information not present in the passages."""
 
+    # Build message list: system + history + current question with context
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+
+    # Inject last 10 turns of history so Groq can answer follow-up questions
+    for h in request.history[-10:]:
+        messages.append({"role": h.role, "content": h.content})
+
+    messages.append({
+        "role": "user",
+        "content": (
+            f"Temple: {request.temple_name or 'Temple'}\n"
+            f"Role: {request.role}\n"
+            f"Question: {request.message}\n\n"
+            f"Context:\n{context}"
+        ),
+    })
+
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
         response = await client.post(
             _GROQ_CHAT_URL,
             headers={"Authorization": f"Bearer {settings.groq_api_key}"},
             json={
                 "model": settings.groq_model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Temple: {request.temple_name or 'Temple'}\n"
-                            f"Role: {request.role}\n"
-                            f"Question: {request.message}\n\n"
-                            f"Context:\n{context}"
-                        ),
-                    },
-                ],
+                "messages": messages,
                 "temperature": 0.3,
             },
         )
