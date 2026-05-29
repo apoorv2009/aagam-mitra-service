@@ -555,7 +555,12 @@ async def generate_assistant_reply(
     temple_id: str,
     request: TempleAssistantRequest,
 ) -> TempleAssistantResponse:
-    await _sync_temple_knowledge(temple_id)
+    # Sync is best-effort — a failure (e.g. temple not found, network error)
+    # should not crash the whole request; we fall back to cached data or RAG.
+    try:
+        await _sync_temple_knowledge(temple_id)
+    except Exception:
+        pass
     retrieved_chunks, tool_results = await asyncio.gather(
         _retrieve_chunks(temple_id, request.message),
         _run_tools(temple_id, request),
