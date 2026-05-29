@@ -14,14 +14,24 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.1-8b-instant"
 
-    # Pinecone — persistent vector store
+    # Pinecone — persistent vector store for Jain texts
     pinecone_api_key: str = ""
     pinecone_index_name: str = "jain-texts"
+
+    # SQLite / Postgres — temple operational knowledge (synced from other services)
+    database_url: str = "sqlite:///./temple_ai.db"
+
+    # Upstream services
+    admin_service_url: str = "http://localhost:8003"
+    registration_service_url: str = "http://localhost:8002"
+    upstream_timeout_seconds: float = 45.0
+    upstream_retry_attempts: int = 4
 
     # RAG tuning
     retrieval_limit: int = 4
     chunk_size_characters: int = 800
     chunk_overlap_characters: int = 100
+    sync_ttl_seconds: int = 300
 
     model_config = SettingsConfigDict(
         env_file=".env",

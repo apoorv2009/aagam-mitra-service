@@ -8,7 +8,13 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: PINECONE_API_KEY
         sync: false
       - key: PINECONE_INDEX_NAME
         value: jain-texts
+      - key: ADMIN_SERVICE_URL
+        sync: false
+      - key: REGISTRATION_SERVICE_URL
+        sync: false
