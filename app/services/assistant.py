@@ -20,6 +20,7 @@ from app.schemas.assistant import (
     TempleAssistantResponse,
 )
 from app.services.embedder import embed_texts
+from app.services.vector_store import get_index
 
 _GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -302,9 +303,8 @@ async def _sync_temple_knowledge(temple_id: str) -> None:
         session.commit()
 
 
-async def _retrieve_chunks(temple_id: str, message: str) -> list[RetrievedChunk]:
+async def _retrieve_chunks(temple_id: str, query_embedding: list[float]) -> list[RetrievedChunk]:
     settings = get_settings()
-    query_embedding = (await embed_texts([message], task_type="RETRIEVAL_QUERY"))[0]
 
     with SessionLocal() as session:
         rows = session.execute(
@@ -327,6 +327,21 @@ async def _retrieve_chunks(temple_id: str, message: str) -> list[RetrievedChunk]
 
     ranked.sort(key=lambda item: item.similarity, reverse=True)
     return ranked[:settings.retrieval_limit]
+
+
+async def _retrieve_jain_chunks(query_embedding: list[float]) -> list[dict]:
+    """Query Pinecone for relevant Jain text chunks."""
+    settings = get_settings()
+    try:
+        index = get_index()
+        results = index.query(
+            vector=query_embedding,
+            top_k=settings.retrieval_limit,
+            include_metadata=True,
+        )
+        return results.matches if results.matches else []
+    except Exception:
+        return []
 
 
 def _extract_iso_date(message: str) -> str | None:
@@ -494,11 +509,40 @@ async def _generate_with_groq(
     request: TempleAssistantRequest,
     retrieved_chunks: list[RetrievedChunk],
     tool_results: list[ToolResult],
+    jain_matches: list,
 ) -> str:
     settings = get_settings()
-    context_blocks = [f"[{c.source_type}] {c.title}: {c.content}" for c in retrieved_chunks[:5]]
+
+    context_parts: list[str] = []
+
+    # Temple operational context (bookings, donations, news, membership)
+    temple_blocks = [f"[{c.source_type}] {c.title}: {c.content}" for c in retrieved_chunks[:4]]
     if tool_results:
-        context_blocks.append("Live temple facts:\n" + "\n".join(f"- {r.fact}" for r in tool_results))
+        temple_blocks.append("Live temple facts:\n" + "\n".join(f"- {r.fact}" for r in tool_results))
+    if temple_blocks:
+        context_parts.append("--- TEMPLE INFORMATION ---\n" + "\n\n".join(temple_blocks))
+
+    # Jain scripture context (Agam texts, philosophy, shlokas)
+    if jain_matches:
+        jain_blocks = [
+            f"[{m.metadata.get('source', '?')}, p.{m.metadata.get('page', '?')}]\n{m.metadata.get('text', '')}"
+            for m in jain_matches[:4]
+        ]
+        context_parts.append("--- JAIN TEXTS ---\n" + "\n\n---\n\n".join(jain_blocks))
+
+    context = "\n\n".join(context_parts) if context_parts else "No context available."
+
+    system_prompt = (
+        "You are Aagam Mitra, a spiritual guide and temple assistant. "
+        "You have two knowledge sources available:\n"
+        "1. TEMPLE INFORMATION — live data about the specific temple: bookings, donations, news, membership, payment.\n"
+        "2. JAIN TEXTS — passages from Jain Agam scriptures and philosophical texts.\n\n"
+        "Use whichever source is relevant to the question. "
+        "For temple operations questions (booking, donations, status), use TEMPLE INFORMATION. "
+        "For spiritual, philosophical, or scripture questions, use JAIN TEXTS. "
+        "If relevant context exists, answer from it. If not, say so honestly. "
+        "Keep answers concise and practical."
+    )
 
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
         response = await client.post(
@@ -507,21 +551,14 @@ async def _generate_with_groq(
             json={
                 "model": settings.groq_model,
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the Temple App assistant. Use retrieved temple knowledge and live temple "
-                            "facts to answer. Do not invent policies or statuses. If information is missing, "
-                            "say so clearly and guide the user to the right tab. Keep the answer practical, direct, and short."
-                        ),
-                    },
+                    {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
                         "content": (
-                            f"Temple: {request.temple_name or request.user_id}\n"
+                            f"Temple: {request.temple_name or 'Temple'}\n"
                             f"Role: {request.role}\n"
                             f"Question: {request.message}\n\n"
-                            "Temple context:\n" + "\n\n".join(context_blocks)
+                            f"Context:\n{context}"
                         ),
                     },
                 ],
@@ -555,25 +592,47 @@ async def generate_assistant_reply(
     temple_id: str,
     request: TempleAssistantRequest,
 ) -> TempleAssistantResponse:
-    # Sync is best-effort — a failure (e.g. temple not found, network error)
-    # should not crash the whole request; we fall back to cached data or RAG.
+    # Sync temple knowledge best-effort — failure is silent
     try:
         await _sync_temple_knowledge(temple_id)
     except Exception:
         pass
-    retrieved_chunks, tool_results = await asyncio.gather(
-        _retrieve_chunks(temple_id, request.message),
-        _run_tools(temple_id, request),
+
+    # Embed question ONCE — reused by both SQLite and Pinecone retrievals
+    query_embedding = (await embed_texts([request.message], task_type="RETRIEVAL_QUERY"))[0]
+
+    # Query all sources in parallel — each is individually resilient to failure
+    async def _safe_run_tools() -> list[ToolResult]:
+        try:
+            return await _run_tools(temple_id, request)
+        except Exception:
+            return []
+
+    retrieved_chunks, tool_results, jain_matches = await asyncio.gather(
+        _retrieve_chunks(temple_id, query_embedding),
+        _safe_run_tools(),
+        _retrieve_jain_chunks(query_embedding),
     )
 
-    citations = [_build_citation_from_tool(r) for r in tool_results[:3]]
-    citations.extend(_build_citation_from_chunk(c) for c in retrieved_chunks[:3])
+    # Build citations from all sources
+    citations = [_build_citation_from_tool(r) for r in tool_results[:2]]
+    citations.extend(_build_citation_from_chunk(c) for c in retrieved_chunks[:2])
+    citations.extend(
+        TempleAssistantCitation(
+            source_id=f"jain-{i}",
+            title=m.metadata.get("source", "Jain Text"),
+            source_type="jain_text",  # type: ignore[arg-type]
+            excerpt=m.metadata.get("text", "")[:220],
+        )
+        for i, m in enumerate(jain_matches[:2])
+    )
 
     try:
         final_message = await _generate_with_groq(
             request=request,
             retrieved_chunks=retrieved_chunks,
             tool_results=tool_results,
+            jain_matches=jain_matches,
         )
         mode = "agent" if tool_results else "retrieval"
     except Exception:

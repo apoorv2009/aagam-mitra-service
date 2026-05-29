@@ -22,6 +22,7 @@ class TempleAssistantCitation(BaseModel):
         "booking_status",
         "donation_status",
         "membership_status",
+        "jain_text",
     ]
     excerpt: str
 
