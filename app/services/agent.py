@@ -121,6 +121,71 @@ def _build_tools() -> list[dict]:
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },
         },
+        # --- Phase 2 tools ---
+        {
+            "type": "function",
+            "function": {
+                "name": "get_events",
+                "description": "Get upcoming temple events.",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_wall_of_fame",
+                "description": "Get the temple wall of fame — recognition and honour posts for devotees.",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_membership_request",
+                "description": (
+                    "Submit a request to join the temple as a member. "
+                    "Only call after confirming the user's full name (requester_name)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "requester_name": {
+                            "type": "string",
+                            "description": "Full name of the person requesting membership",
+                        },
+                    },
+                    "required": ["requester_name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_feedback",
+                "description": (
+                    "Submit a rating and optional feedback comment for the temple. "
+                    "Ask the user for a rating (1-5) and an optional comment before calling."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "user_name": {
+                            "type": "string",
+                            "description": "Display name of the user submitting feedback",
+                        },
+                        "overall_rating": {
+                            "type": "integer",
+                            "description": "Rating from 1 (poor) to 5 (excellent)",
+                        },
+                        "comment": {
+                            "type": "string",
+                            "description": "Optional comment or review text",
+                        },
+                    },
+                    "required": ["user_name", "overall_rating"],
+                },
+            },
+        },
     ]
 
 
@@ -307,6 +372,116 @@ async def _tool_get_temple_info(temple_id: str) -> dict:
         return {"error": str(exc)}
 
 
+async def _tool_get_events(temple_id: str) -> dict:
+    settings = get_settings()
+    url = f"{settings.admin_service_url}/api/v1/temples/{temple_id}/events"
+    try:
+        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+        items = r.json().get("items", [])
+        if not items:
+            return {"found": False, "message": "No upcoming events found."}
+        return {
+            "found": True,
+            "events": [
+                {
+                    "title": e.get("title"),
+                    "summary": e.get("summary"),
+                    "date": e.get("event_date"),
+                    "location": e.get("location"),
+                }
+                for e in items[:5]
+            ],
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _tool_get_wall_of_fame(temple_id: str) -> dict:
+    settings = get_settings()
+    url = f"{settings.admin_service_url}/api/v1/temples/{temple_id}/wall-of-fame"
+    try:
+        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+        items = r.json().get("items", [])
+        if not items:
+            return {"found": False, "message": "No wall of fame entries yet."}
+        return {
+            "found": True,
+            "entries": [
+                {
+                    "title": e.get("title"),
+                    "honoree": e.get("honoree_name"),
+                    "note": e.get("note"),
+                    "date": e.get("created_at"),
+                }
+                for e in items[:5]
+            ],
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _tool_submit_membership_request(temple_id: str, user_id: str, requester_name: str) -> dict:
+    settings = get_settings()
+    url = f"{settings.registration_service_url}/api/v1/temple-subscriptions"
+    try:
+        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+            r = await client.post(url, json={
+                "user_id": user_id,
+                "temple_id": temple_id,
+                "requester_name": requester_name,
+            })
+            r.raise_for_status()
+        result = r.json()
+        return {
+            "success": True,
+            "subscription_id": result.get("subscription_id"),
+            "status": result.get("status"),
+            "message": "Your membership request has been submitted. An admin will review it shortly.",
+        }
+    except httpx.HTTPStatusError as exc:
+        detail = "Unable to submit membership request."
+        try:
+            detail = exc.response.json().get("detail", detail)
+        except Exception:
+            pass
+        return {"success": False, "error": detail}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def _tool_submit_feedback(
+    temple_id: str, user_id: str, user_name: str, overall_rating: int, comment: str
+) -> dict:
+    settings = get_settings()
+    url = f"{settings.admin_service_url}/api/v1/temples/{temple_id}/feedback"
+    try:
+        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+            r = await client.post(url, json={
+                "user_id": user_id,
+                "user_name": user_name,
+                "overall_rating": max(1, min(5, overall_rating)),
+                "comment": comment or "",
+            })
+            r.raise_for_status()
+        return {
+            "success": True,
+            "message": f"Thank you for your feedback! Your rating of {overall_rating}/5 has been submitted.",
+        }
+    except httpx.HTTPStatusError as exc:
+        detail = "Unable to submit feedback."
+        try:
+            detail = exc.response.json().get("detail", detail)
+        except Exception:
+            pass
+        return {"success": False, "error": detail}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 async def _execute_tool(temple_id: str, user_id: str, tool_call: dict) -> dict:
     name = tool_call["function"]["name"]
     try:
@@ -325,8 +500,20 @@ async def _execute_tool(temple_id: str, user_id: str, tool_call: dict) -> dict:
         ),
         "get_my_bookings":        lambda: _tool_get_my_bookings(temple_id, user_id),
         "get_membership_status":  lambda: _tool_get_membership_status(temple_id, user_id),
-        "get_temple_news":        lambda: _tool_get_temple_news(temple_id),
-        "get_temple_info":        lambda: _tool_get_temple_info(temple_id),
+        "get_temple_news":           lambda: _tool_get_temple_news(temple_id),
+        "get_temple_info":           lambda: _tool_get_temple_info(temple_id),
+        # Phase 2
+        "get_events":                lambda: _tool_get_events(temple_id),
+        "get_wall_of_fame":          lambda: _tool_get_wall_of_fame(temple_id),
+        "submit_membership_request": lambda: _tool_submit_membership_request(
+            temple_id, user_id, args.get("requester_name", "")
+        ),
+        "submit_feedback":           lambda: _tool_submit_feedback(
+            temple_id, user_id,
+            user_name=args.get("user_name", ""),
+            overall_rating=int(args.get("overall_rating", 3)),
+            comment=args.get("comment", ""),
+        ),
     }
 
     handler = dispatch.get(name)
