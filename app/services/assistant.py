@@ -19,6 +19,7 @@ from app.schemas.assistant import (
     TempleAssistantRequest,
     TempleAssistantResponse,
 )
+from app.services.chat_history import save_exchange
 from app.services.embedder import embed_texts
 from app.services.vector_store import get_index
 
@@ -653,6 +654,17 @@ async def generate_assistant_reply(
             retrieved_chunks=retrieved_chunks,
             tool_results=tool_results,
         )
+
+    # Persist the exchange — best-effort, never crash the response
+    try:
+        save_exchange(
+            user_id=request.user_id,
+            temple_id=temple_id,
+            user_message=request.message,
+            assistant_message=final_message,
+        )
+    except Exception:
+        pass
 
     return TempleAssistantResponse(
         message=final_message,

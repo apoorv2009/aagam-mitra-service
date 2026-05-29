@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -10,6 +11,22 @@ from app.core.database import Base
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class ChatMessage(Base):
+    """Persisted chat history — one row per message (user or assistant)."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_user_temple", "user_id", "temple_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    temple_id: Mapped[str] = mapped_column(String(32), index=True)
+    role: Mapped[str] = mapped_column(String(16))          # "user" | "assistant"
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class TempleKnowledgeDocument(Base):
