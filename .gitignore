@@ -6,3 +6,7 @@ __pycache__/
 venv/
 data/**/*.pdf
 dist/
+*.db
+*.db-shm
+*.db-wal
+test_ask.py
