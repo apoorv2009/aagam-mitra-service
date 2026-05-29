@@ -24,13 +24,50 @@ from app.services.vector_store import get_index
 _GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 _MAX_ITERATIONS = 6
 
-_SYSTEM_PROMPT = (
-    f"You are Aagam Mitra — a knowledgeable Jain temple assistant. Today is {date.today().isoformat()}. "
-    "Always use the available tools to fetch real data before answering. "
-    "For Shantidhara booking: first call get_shantidhara_slots, show the slots, ask for karta_name if missing, then book. "
-    "Match the user's language (Hindi → Hindi, English → English). "
-    "For lists like bhavs or shlokas, use numbered format and be thorough."
-)
+_SYSTEM_PROMPT = f"""You are Aagam Mitra — a knowledgeable, thoughtful Jain temple assistant with deep expertise in Jain philosophy and temple operations. Today is {date.today().isoformat()}.
+
+**CORE PRINCIPLES:**
+1. Always use available tools to fetch REAL DATA before answering
+2. SYNTHESIZE information — never copy passages verbatim
+3. Provide CONTEXT before details (explain significance and deeper meaning)
+4. Structure answers with clear sections, numbering, or bullet points
+5. Include TRANSLITERATION for Sanskrit/Prakrit terms with English meanings
+6. For spiritual/philosophical questions: explain concepts thoroughly with examples
+
+**FOR JAIN SCRIPTURE QUESTIONS:**
+- Lead with the concept/context (why this matters)
+- Provide the relevant shloka, bhav, or sutra if applicable
+- Explain the literal meaning and deeper philosophical significance
+- Connect to practical application in spiritual life
+- Use numbered lists when covering multiple bhavs/concepts
+- Example structure:
+  1. Context/Background
+  2. The Sacred Text (with transliteration)
+  3. Meaning Explained
+  4. Deeper Spiritual Insight
+  5. How to Apply This
+
+**FOR TEMPLE OPERATIONS:**
+- Be direct and actionable
+- Always provide dates/times in clear format
+- Give next steps explicitly
+- Confirm understanding
+
+**RESPONSE QUALITY GUIDELINES:**
+- Minimum 100 words for scripture questions (depth matters)
+- Use subheadings/numbering for clarity
+- Include the why, not just the what
+- Add practical wisdom when relevant
+
+**LANGUAGE:**
+- Match user's language: Hindi input → respond in Hindi, English input → respond in English
+- Use Devanagari transliteration for Sanskrit terms
+- Provide English translations inline
+
+**FOR BOOKING/OPERATIONS:**
+- For Shantidhara: first call get_shantidhara_slots, display options clearly, ask for karta_name, then book
+- Always confirm details before final action
+- Provide booking reference and next steps"""
 
 
 def _build_tools() -> list[dict]:
@@ -578,16 +615,119 @@ async def _call_groq(messages: list[dict], tools: list[dict]) -> dict:
                 "messages": messages,
                 "tools": tools,
                 "tool_choice": "auto",
-                "temperature": 0.3,
+                "temperature": getattr(settings, 'groq_temperature', 0.5),
             },
         )
         r.raise_for_status()
     return r.json()
 
 
+def _format_tool_result_for_synthesis(tool_name: str, result: dict) -> str:
+    """Format tool results to be more synthesizable by the LLM
+
+    Provides context and structure that helps the model understand and
+    synthesize the data rather than copy it verbatim.
+    """
+    if "error" in result:
+        return f"[Error from {tool_name}: {result['error']}]"
+
+    if tool_name == "search_jain_texts":
+        if not result.get("found"):
+            return "[No relevant Jain scripture passages found]"
+
+        passages = result.get("passages", [])
+        formatted = f"[Retrieved {len(passages)} relevant passages from Jain texts for synthesis]\n"
+        for i, p in enumerate(passages[:8], 1):  # Max 8 chunks
+            formatted += f"\n{i}. From '{p['source']}':\n"
+            formatted += f"   Text: {p['text']}\n"
+            formatted += f"   Relevance: {p['score']:.2f}\n"
+        formatted += "\n[Use these passages to synthesize a comprehensive, insightful answer]"
+        return formatted
+
+    elif tool_name == "get_shantidhara_slots":
+        if not result.get("available"):
+            return "[No available Shantidhara slots found]"
+
+        slots = result.get("slots", [])
+        formatted = f"[Found {len(slots)} available Shantidhara slots]\n"
+        for s in slots:
+            formatted += f"\n• {s['label']} - {s.get('amount', 'N/A')}\n"
+            formatted += f"  Pratima: {s.get('pratima', 'Not specified')}"
+        return formatted
+
+    elif tool_name == "get_my_bookings":
+        if not result.get("found"):
+            return "[No Shantidhara bookings found]"
+
+        bookings = result.get("bookings", [])
+        formatted = f"[Found {len(bookings)} bookings]\n"
+        for b in bookings:
+            formatted += f"\n• {b['label']} - Status: {b['status']}\n"
+            formatted += f"  Karta: {b['karta_name']}, Amount: {b['amount']}"
+        return formatted
+
+    elif tool_name == "get_temple_news":
+        if not result.get("found"):
+            return "[No temple news available]"
+
+        news_items = result.get("news", [])
+        formatted = f"[Found {len(news_items)} temple news items]\n"
+        for item in news_items[:5]:
+            formatted += f"\n• {item['title']}\n"
+            formatted += f"  {item['content'][:200]}...\n"
+        return formatted
+
+    elif tool_name == "get_temple_info":
+        if "error" in result:
+            return f"[Could not retrieve temple info: {result['error']}]"
+
+        formatted = f"[Temple Information]\n"
+        formatted += f"• Name: {result.get('name', 'N/A')}\n"
+        formatted += f"• Address: {result.get('address', 'N/A')}\n"
+        formatted += f"• Hours: {result.get('hours', 'N/A')}\n"
+        formatted += f"• Phone: {result.get('phone', 'N/A')}\n"
+        formatted += f"• Email: {result.get('email', 'N/A')}"
+        return formatted
+
+    # Default: pretty-print JSON for other tools
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 async def run_agent(temple_id: str, request: TempleAssistantRequest) -> str:
     tools = _build_tools()
     messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+
+    # Add few-shot examples to teach the model what good synthesis looks like
+    messages.extend([
+        {
+            "role": "user",
+            "content": "What are the key bhavs of Aadinath Bhagwan?"
+        },
+        {
+            "role": "assistant",
+            "content": """Aadinath Bhagwan, the first Tirthankara, represents the pinnacle of spiritual evolution in Jainism. His bhavs (divine qualities/spiritual states) exemplify the path to liberation:
+
+**1. Samata Bhav (Equanimity)**
+The foundational quality of perfect balance and non-attachment. Aadinath embodies complete detachment from worldly attractions and repulsions, maintaining perfect equanimity in all circumstances.
+
+**2. Uttama Kshama Bhav (Supreme Forbearance)**
+Transcendent patience and forgiveness. He accepts all trials without anger or resentment, never retaliating even when provoked.
+
+**3. Uttama Satya Bhav (Perfect Truthfulness)**
+Complete adherence to truth in thought, word, and deed. His every utterance aligns with absolute reality and dharma.
+
+**4. Anukula Bhav (Favorable Dispositions)**
+Actions perfectly aligned with Jain principles. Every action contributes to spiritual progress and never causes harm.
+
+**5. Kevala Darshan (Infinite Vision)**
+Supreme omniscient perception - ability to see all past, present, and future simultaneously without any obstruction.
+
+**6. Kevala Jnana (Infinite Knowledge)**
+Perfect, all-encompassing knowledge of every aspect of existence. This is the ultimate fruit of spiritual practice.
+
+These bhavs are not merely abstract concepts but stages of spiritual transformation that culminate in becoming a Kevalin (fully liberated soul). They guide devotees on their own paths to enlightenment."""
+        }
+    ])
 
     # Inject conversation history for follow-up question support
     for h in request.history[-10:]:
@@ -609,10 +749,13 @@ async def run_agent(temple_id: str, request: TempleAssistantRequest) -> str:
                 *[_execute_tool(temple_id, request.user_id, tc) for tc in tool_calls]
             )
             for tc, result in zip(tool_calls, results):
+                # Format tool result to help LLM synthesize better
+                tool_name = tc["function"]["name"]
+                formatted_content = _format_tool_result_for_synthesis(tool_name, result)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": formatted_content,
                 })
 
         elif finish_reason in ("stop", "length", None):

@@ -12,7 +12,8 @@ class Settings(BaseSettings):
 
     # Groq — answer generation (free, 14,400 req/day)
     groq_api_key: str = ""
-    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    groq_model: str = "meta-llama/llama-3.3-70b-versatile"
+    groq_temperature: float = 0.5  # Increased from 0.3 for more detailed synthesis
 
     # Pinecone — persistent vector store for Jain texts
     pinecone_api_key: str = ""
