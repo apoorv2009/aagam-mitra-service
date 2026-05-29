@@ -606,54 +606,14 @@ async def generate_assistant_reply(
     temple_id: str,
     request: TempleAssistantRequest,
 ) -> TempleAssistantResponse:
-    # Sync temple knowledge best-effort — failure is silent
-    try:
-        await _sync_temple_knowledge(temple_id)
-    except Exception:
-        pass
-
-    # Embed question ONCE — reused by both SQLite and Pinecone retrievals
-    query_embedding = (await embed_texts([request.message], task_type="RETRIEVAL_QUERY"))[0]
-
-    # Query all sources in parallel — each is individually resilient to failure
-    async def _safe_run_tools() -> list[ToolResult]:
-        try:
-            return await _run_tools(temple_id, request)
-        except Exception:
-            return []
-
-    retrieved_chunks, tool_results, jain_matches = await asyncio.gather(
-        _retrieve_chunks(temple_id, query_embedding),
-        _safe_run_tools(),
-        _retrieve_jain_chunks(query_embedding),
-    )
-
-    # Build citations from all sources
-    citations = [_build_citation_from_tool(r) for r in tool_results[:2]]
-    citations.extend(_build_citation_from_chunk(c) for c in retrieved_chunks[:2])
-    citations.extend(
-        TempleAssistantCitation(
-            source_id=f"jain-{i}",
-            title=m.metadata.get("source", "Jain Text"),
-            source_type="jain_text",  # type: ignore[arg-type]
-            excerpt=m.metadata.get("text", "")[:220],
-        )
-        for i, m in enumerate(jain_matches[:2])
-    )
+    from app.services.agent import run_agent  # local import avoids circular deps
 
     try:
-        final_message = await _generate_with_groq(
-            request=request,
-            retrieved_chunks=retrieved_chunks,
-            tool_results=tool_results,
-            jain_matches=jain_matches,
-        )
-        mode = "agent" if tool_results else "retrieval"
+        final_message = await run_agent(temple_id, request)
+        mode = "agent"
     except Exception:
-        final_message, mode = _build_fallback_message(
-            retrieved_chunks=retrieved_chunks,
-            tool_results=tool_results,
-        )
+        final_message = "Aagam Mitra is temporarily unavailable. Please try again shortly."
+        mode = "fallback"
 
     # Persist the exchange — best-effort, never crash the response
     try:
@@ -669,6 +629,6 @@ async def generate_assistant_reply(
     return TempleAssistantResponse(
         message=final_message,
         mode=mode,  # type: ignore[arg-type]
-        citations=citations[:5],
+        citations=[],
         action_cards=_action_cards_for_message(request.message, request.role),
     )

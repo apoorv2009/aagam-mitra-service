@@ -10,3 +10,4 @@ dist/
 *.db-shm
 *.db-wal
 test_ask.py
+debug_*.py
