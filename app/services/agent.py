@@ -161,6 +161,24 @@ def _build_tools() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "cancel_booking",
+                "description": (
+                    "Cancel an unpaid Shantidhara booking. "
+                    "Only works for pending or proof_submitted bookings — not paid or confirmed ones. "
+                    "First call get_my_bookings to find the booking_id if the user doesn't provide it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "booking_id": {"type": "string", "description": "The booking_id to cancel"},
+                    },
+                    "required": ["booking_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "submit_feedback",
                 "description": (
                     "Submit a rating and optional feedback comment for the temple. "
@@ -372,6 +390,28 @@ async def _tool_get_temple_info(temple_id: str) -> dict:
         return {"error": str(exc)}
 
 
+async def _tool_cancel_booking(user_id: str, booking_id: str) -> dict:
+    settings = get_settings()
+    url = (
+        f"{settings.registration_service_url}/api/v1/temple-subscriptions"
+        f"/shantidhara-bookings/{booking_id}/cancel?user_id={user_id}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=settings.upstream_timeout_seconds) as client:
+            r = await client.post(url)
+            r.raise_for_status()
+        return {"success": True, "message": "Booking cancelled successfully. The slot has been freed."}
+    except httpx.HTTPStatusError as exc:
+        detail = "Unable to cancel booking."
+        try:
+            detail = exc.response.json().get("detail", detail)
+        except Exception:
+            pass
+        return {"success": False, "error": detail}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 async def _tool_get_events(temple_id: str) -> dict:
     settings = get_settings()
     url = f"{settings.admin_service_url}/api/v1/temples/{temple_id}/events"
@@ -503,6 +543,7 @@ async def _execute_tool(temple_id: str, user_id: str, tool_call: dict) -> dict:
         "get_temple_news":           lambda: _tool_get_temple_news(temple_id),
         "get_temple_info":           lambda: _tool_get_temple_info(temple_id),
         # Phase 2
+        "cancel_booking":            lambda: _tool_cancel_booking(user_id, args.get("booking_id", "")),
         "get_events":                lambda: _tool_get_events(temple_id),
         "get_wall_of_fame":          lambda: _tool_get_wall_of_fame(temple_id),
         "submit_membership_request": lambda: _tool_submit_membership_request(
