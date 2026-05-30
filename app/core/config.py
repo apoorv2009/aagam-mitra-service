@@ -1,26 +1,31 @@
-from functools import lru_cache
+﻿from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
+
+_SERVICE_DIR = Path(__file__).resolve().parent.parent.parent
+_DEFAULT_DB_URL = f"sqlite:///{_SERVICE_DIR / 'temple_ai.db'}"
 
 class Settings(BaseSettings):
     app_name: str = "aagam-mitra-service"
     environment: str = "dev"
 
-    # Google Gemini — embeddings only
+    # Google Gemini â€” embeddings only
     gemini_api_key: str = ""
 
-    # Groq — answer generation (free, 14,400 req/day)
+    # Groq â€” answer generation (free, 14,400 req/day)
     groq_api_key: str = ""
-    groq_model: str = "meta-llama/llama-3.3-70b-versatile"
+    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     groq_temperature: float = 0.5  # Increased from 0.3 for more detailed synthesis
 
-    # Pinecone — persistent vector store for Jain texts
+    # Pinecone â€” persistent vector store for Jain texts
     pinecone_api_key: str = ""
     pinecone_index_name: str = "jain-texts"
 
-    # SQLite / Postgres — temple operational knowledge (synced from other services)
-    database_url: str = "sqlite:///./temple_ai.db"
+    # SQLite / Postgres â€” temple operational knowledge (synced from other services)
+    database_url: str = "_DEFAULT_DB_URL"
 
     # Upstream services
     admin_service_url: str = "http://localhost:8003"
@@ -44,3 +49,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
